@@ -326,11 +326,11 @@ class PlanSketch(_Base):
         text_h = 26
         side = min(self.width(), self.height() - text_h) - 8
         c = QPointF(self.width() / 2.0, 4 + side / 2.0)
+        ld = k['leads'][-1]
         if p.internal:
             extent = D / 2.0 * 1.45
         else:
-            re = (k['start_d'] - k['final_d']) / 2.0 + k['clear_gap'] + tr / 2.0
-            extent = max(rp + re + tr * 0.6, rp + tr) * 1.05
+            extent = max(rp + ld['re'] + tr * 0.6, math.hypot(ld['st'][0], ld['st'][1]) + tr, rp + tr) * 1.05
         sc = side / (2.0 * extent)
 
         def P(x, y):
@@ -370,11 +370,7 @@ class PlanSketch(_Base):
             pt = P(rp * math.cos(ang), rp * math.sin(ang))
             _arrow(qp, pt, (-math.sin(ang) * s, -math.cos(ang) * s), 11)
 
-        if p.internal:
-            ce, re, kd, sweep = (rp / 2.0, 0.0), rp / 2.0, s, math.pi
-        else:
-            re = (k['start_d'] - k['final_d']) / 2.0 + k['clear_gap'] + tr / 2.0
-            ce, kd, sweep = (rp + re, 0.0), -s, math.pi / 2
+        ce, re, kd, sweep = ld['ce'], ld['re'], ld['k'], ld['sweep']
         a_end = math.pi
         a_start = a_end - kd * sweep
         path = QPainterPath()

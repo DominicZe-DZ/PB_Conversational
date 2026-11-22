@@ -26,14 +26,21 @@ Conventions
 - A right-hand thread moves up (+Z) when following a G3 helix.
 - Tool Z = tool TIP (matching standard tool length offset).
   The lowest thread profile sits 'tooth_offset' above the tip.
-- Helical tangential lead-in / lead-out (each advances P/4 in Z) to avoid leaving witness marks:
+- Helical tangential lead-in / lead-out to avoid leaving witness marks:
       internal: semicircle starting/ending at hole center (no straight plunge into cut);
       external: quarter-circle starting/ending clear of the cylinder OD.
+  Each lead arc advances in Z by the same fraction of a pitch as the polar angle it sweeps
+  around the thread axis (P/4 internal, ~P/12..P/8 external), so the tooth enters the groove
+  following the thread lead instead of dragging across a flank.
+- Lead arcs run at a reduced feed (LEAD FEED %, default 50%) referred to the cutting edge at the
+  contact point: on a lead arc of radius R the edge travels on R + tool radius, so the tool-center
+  feed is F_lead = F_edge * lead% * R / (R + tool radius). Without this the edge would run 1.6x to
+  3x faster than on the helix while the tooth is still loading up.
 - Radial passes use decreasing depth (~sqrt(i/n), like single-point lathe threading) or equal
   steps, plus an optional spring pass.
 - Feedrate: user enters cutting-edge feed; converted to tool-center feed for LinuxCNC:
   F_center = F_edge * R_center / R_edge.
-- Lowest profile tooth never drops below z_bottom (helix starts/ends P/4 above z_bottom).
+- Lowest profile tooth never drops below z_bottom (helix starts/ends one lead-arc rise above z_bottom).
 """
 
 import math
@@ -136,6 +143,7 @@ class ThreadMillParams(object):
         self.spindle_rpm = 3000.0
         self.feed_edge = 300.0       # cutting edge feedrate (units/min)
         self.feed_compensate = True  # convert edge feed to tool-center feed
+        self.lead_feed = 0.5         # lead-in / lead-out feed as fraction of edge feed
         self.radial_passes = 1
         self.pass_mode = 'DEC'       # 'DEC' decreasing (~sqrt(i/n)) or 'EQ' equal
         self.spring_pass = False
@@ -283,6 +291,8 @@ def validate(p):
         errors.append('Spindle RPM must be greater than 0.')
     if p.feed_edge <= 0:
         errors.append('Feedrate must be greater than 0.')
+    if not (0 < p.lead_feed <= 1.0 + 1e-9):
+        errors.append('Lead feed must be between 1% and 100%.')
     if p.radial_passes < 1:
         errors.append('At least 1 radial pass is required.')
     if p.z_top <= p.z_bottom:
@@ -488,9 +498,36 @@ def tool_messages(p):
 
 
 # ---------------------------------------------------------------- toolpath
-def _plan_z(p, dirz):
-    """Return (z_entry, z_helix_start, turns, z_helix_end, z_exit) for the lowest tooth."""
-    q = p.pitch / 4.0
+def lead_arc(p, k, rp):
+    """Tangential lead arc for path radius rp (relative to thread axis): geometry, Z rise and feed."""
+    tr = k['tr']
+    if p.internal:
+        re = rp / 2.0
+        ce = (rp - re, 0.0)
+        kd = k['s']
+        sweep = math.pi
+        phi = math.pi / 2.0                     # polar angle swept around the thread axis
+    else:
+        re = (k['start_d'] - k['final_d']) / 2.0 + k['clear_gap'] + tr
+        ce = (rp + re, 0.0)
+        kd = -k['s']
+        sweep = math.pi / 2.0
+        phi = math.atan2(re, rp + re)
+    v = (rp - ce[0], -ce[1])
+    st = _rot(v, -kd * sweep)
+    en = _rot(v, kd * sweep)
+    # contact point sits on the far side of the cutter from the arc center: edge path radius = re + tr
+    if p.feed_compensate:
+        feed = p.feed_edge * p.lead_feed * re / (re + tr)
+    else:
+        feed = k['feed'] * p.lead_feed
+    return dict(re=re, ce=ce, k=kd, sweep=sweep, st=(ce[0] + st[0], ce[1] + st[1]),
+                en=(ce[0] + en[0], ce[1] + en[1]), dz=p.pitch * phi / (2 * math.pi), feed=feed)
+
+
+def _plan_z(p, dirz, q):
+    """Return (z_entry, z_helix_start, turns, z_helix_end, z_exit) for the lowest tooth.
+    q = largest lead-arc Z rise, so lead-in / lead-out never take the tooth below z_bottom."""
     span_teeth = (p.teeth - 1) * p.pitch
     z_lo = p.z_bottom + q
     needed = (p.z_top - span_teeth) - z_lo
@@ -544,12 +581,22 @@ def plan(p):
     if p.feed_compensate and r_edge > 0:
         feed = p.feed_edge * r_final / r_edge
 
-    z_entry, z_h0, turns, z_h1, z_exit = _plan_z(p, dirz)
     chamfer = chamfer_plan(p, start_d, tr) if (p.chamfer and p.internal) else None
-    return dict(chamfer=chamfer, pass_depths=pass_depths, tr=tr, clear_gap=clear_gap, s=s, dirz=dirz,
-                helix_g=helix_g, start_d=start_d, final_d=final_d, r_first=r_first, r_final=r_final,
-                r_edge=r_edge, n=n, radii=radii, feed=feed, z_entry=z_entry, z_h0=z_h0, turns=turns,
-                z_h1=z_h1, z_exit=z_exit)
+    k = dict(chamfer=chamfer, pass_depths=pass_depths, tr=tr, clear_gap=clear_gap, s=s, dirz=dirz,
+             helix_g=helix_g, start_d=start_d, final_d=final_d, r_first=r_first, r_final=r_final,
+             r_edge=r_edge, n=n, radii=radii, feed=feed)
+    k['leads'] = [lead_arc(p, k, r_) for r_ in radii]
+    z_entry, z_h0, turns, z_h1, z_exit = _plan_z(p, dirz, max(ld['dz'] for ld in k['leads']))
+    k.update(z_entry=z_entry, z_h0=z_h0, turns=turns, z_h1=z_h1, z_exit=z_exit)
+    return k
+
+
+def _chamfer_lead_feed(p, rc, crest, f_circle):
+    """Center feed for chamfer lead arcs (radius rc/2), referred to the crest at the contact point."""
+    if not p.feed_compensate:
+        return f_circle * p.lead_feed
+    r_arc = rc / 2.0
+    return p.feed_edge * p.lead_feed * r_arc / (r_arc + crest - rc)
 
 
 # ---------------------------------------------------------------- program
@@ -560,9 +607,9 @@ def generate(p):
         raise ThreadMillError('\n'.join(errors))
 
     k_ = plan(p)
-    tr, clear_gap, s, dirz, helix_g = k_['tr'], k_['clear_gap'], k_['s'], k_['dirz'], k_['helix_g']
+    s, dirz, helix_g = k_['s'], k_['dirz'], k_['helix_g']
     start_d, final_d, radii, n, feed = k_['start_d'], k_['final_d'], k_['radii'], k_['n'], k_['feed']
-    z_entry, z_h0, turns, z_exit = k_['z_entry'], k_['z_h0'], k_['turns'], k_['z_exit']
+    z_h0, turns = k_['z_h0'], k_['turns']
     toff = p.tooth_offset
     z_approach = p.z_top + p.retract
     msgs = tool_messages(p)
@@ -673,6 +720,10 @@ def generate(p):
         '' if n == 1 else ', equal' if p.pass_mode == 'EQ' else ', decreasing'))
     g.append('(Tool-center feedrate: F_edge {} x center R {} / edge R {} = F{}.)'.format(
         _short(p.feed_edge), _short(k_['r_final']), _short(k_['r_edge']), _short(feed)))
+    lf = sorted(set(round(ld['feed'], 4) for ld in k_['leads']))
+    g.append('(Lead-in/out feedrate: {}% of edge feed at contact point = F{}.)'.format(
+        _short(p.lead_feed * 100), _short(lf[0]) if len(lf) == 1 else '{} to F{}'.format(
+            _short(lf[0]), _short(lf[-1]))))
     g.append('(MSG, {})'.format(msgs['mill']))
     g.append(_c('T{:d} M6'.format(p.tool_number), 'tool change: thread mill'))
     g.append(_c('G43 H{:d}'.format(p.tool_number), 'enable tool length offset for T{}'.format(p.tool_number)))
@@ -695,22 +746,12 @@ def generate(p):
                 g.append('(pass {} of {}: path radius {}, DOC {} {})'.format(
                     i + 1, n, _short(rp), _short(k_['pass_depths'][i]), u))
             p0 = (rp, 0.0)
-            if p.internal:
-                re = rp / 2.0
-                ce = (rp - re, 0.0)
-                k = s
-                sweep = math.pi
-            else:
-                re = (start_d - final_d) / 2.0 + clear_gap + tr / 2.0
-                ce = (rp + re, 0.0)
-                k = -s
-                sweep = math.pi / 2
-            v = (p0[0] - ce[0], p0[1] - ce[1])
-            st = _rot(v, -k * sweep)
-            st = (ce[0] + st[0], ce[1] + st[1])
-            en = _rot(v, k * sweep)
-            en = (ce[0] + en[0], ce[1] + en[1])
-            arc_g = 'G3' if k > 0 else 'G2'
+            ld = k_['leads'][i]
+            ce, st, en = ld['ce'], ld['st'], ld['en']
+            arc_g = 'G3' if ld['k'] > 0 else 'G2'
+            z_in = z_h0 - dirz * ld['dz']
+            z_out = z_h0 + dirz * (turns * p.pitch + ld['dz'])
+            rise = '1/4 pitch' if p.internal else '{} {} along thread lead'.format(_short(ld['dz']), u)
             updown = 'up' if dirz > 0 else 'down'
 
             sx, sy = hx + st[0], hy + st[1]
@@ -718,27 +759,31 @@ def generate(p):
                 if i == 0:
                     g.append(_c('G0 X{} Y{}'.format(_fmt(hx), _fmt(hy)), 'rapid to hole center'))
                     g.append(_c('G0 Z{}'.format(_fmt(z_approach)), 'rapid to R-plane'))
-                g.append(_c('G1 Z{}'.format(_fmt(z_entry - toff)),
+                g.append(_c('G1 Z{}'.format(_fmt(z_in - toff)),
                             'feed down hole center to helix entry start'))
             else:
                 g.append(_c('G0 X{} Y{}'.format(_fmt(sx), _fmt(sy)), 'rapid to entry point outside cylinder'))
                 g.append(_c('G0 Z{}'.format(_fmt(z_approach)), 'rapid to R-plane'))
-                g.append(_c('G1 Z{}'.format(_fmt(z_entry - toff)), 'feed down outside cylinder to entry start'))
+                g.append(_c('G1 Z{}'.format(_fmt(z_in - toff)), 'feed down outside cylinder to entry start'))
+            g.append(_c('F{}'.format(_fmt(ld['feed'])), 'lead-in feedrate'))
 
             g.append(_c('{} X{} Y{} Z{} I{} J{}'.format(
                 arc_g, _fmt(hx + p0[0]), _fmt(hy + p0[1]), _fmt(z_h0 - toff),
                 _fmt(ce[0] - st[0]), _fmt(ce[1] - st[1])),
-                'tangential lead-in: reach wall and step {} 1/4 pitch'.format(updown)))
+                'tangential lead-in: reach wall and step {} {}'.format(updown, rise)))
+            g.append(_c('F{}'.format(_fmt(feed)), 'restore thread milling feedrate'))
             z = z_h0
             for t in range(turns):
                 z += dirz * p.pitch
                 g.append(_c('{} X{} Y{} Z{} I{} J{}'.format(
                     helix_g, _fmt(hx + p0[0]), _fmt(hy + p0[1]), _fmt(z - toff),
                     _fmt(-p0[0]), _fmt(-p0[1])), 'turn {} of {}: {} 1 pitch'.format(t + 1, turns, updown)))
+            g.append(_c('F{}'.format(_fmt(ld['feed'])), 'lead-out feedrate'))
             g.append(_c('{} X{} Y{} Z{} I{} J{}'.format(
-                arc_g, _fmt(hx + en[0]), _fmt(hy + en[1]), _fmt(z_exit - toff),
+                arc_g, _fmt(hx + en[0]), _fmt(hy + en[1]), _fmt(z_out - toff),
                 _fmt(ce[0] - p0[0]), _fmt(ce[1] - p0[1])),
                 'tangential lead-out to hole center' if p.internal else 'tangential lead-out clear of cylinder'))
+            g.append(_c('F{}'.format(_fmt(feed)), 'restore thread milling feedrate'))
             if not p.internal:
                 g.append(_c('G0 Z{}'.format(_fmt(z_approach)), 'retract to R-plane'))
         if cp:
@@ -750,12 +795,15 @@ def generate(p):
                 rc = c['rc']
                 g.append(_c('G1 Z{}'.format(_fmt(c['z_tip'])),
                             'chamfer {} of {}: move to Z height at center'.format(j + 1, nc)))
-                g.append(_c('F{}'.format(_fmt(p.feed_edge * rc / c['crest'])),
-                            'center feedrate for chamfer pass'))
+                f_ch = p.feed_edge * rc / c['crest']
+                f_ld = _chamfer_lead_feed(p, rc, c['crest'], f_ch)
+                g.append(_c('F{}'.format(_fmt(f_ld)), 'chamfer lead-in feedrate'))
                 g.append(_c('{} X{} Y{} I{} J{}'.format(arc_g, _fmt(hx + rc), _fmt(hy), _fmt(rc / 2.0), _fmt(0.0)),
                             'tangential lead-in: crest reaches D{}'.format(_short(2 * c['crest']))))
+                g.append(_c('F{}'.format(_fmt(f_ch)), 'center feedrate for chamfer pass'))
                 g.append(_c('{} X{} Y{} I{} J{}'.format(arc_g, _fmt(hx + rc), _fmt(hy), _fmt(-rc), _fmt(0.0)),
                             'full circle: flank cuts chamfer'))
+                g.append(_c('F{}'.format(_fmt(f_ld)), 'chamfer lead-out feedrate'))
                 g.append(_c('{} X{} Y{} I{} J{}'.format(arc_g, _fmt(hx), _fmt(hy), _fmt(-rc / 2.0), _fmt(0.0)),
                             'tangential lead-out to center'))
             g.append(_c('F{}'.format(_fmt(feed)), 'restore thread milling feedrate'))

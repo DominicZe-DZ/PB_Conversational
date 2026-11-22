@@ -29,7 +29,7 @@ import shutil
 import subprocess
 import sys
 
-VERSION = '1.5.0'
+VERSION = '1.5.1'
 TAB = 'pb_conversational'
 TABS = (TAB,)
 STATE = '.pb_conversational'

@@ -28,10 +28,13 @@ A few practical details worth noting:
 - **Mouth chamfer (`CHAMFER`):** If your single-form thread mill has a small flat/cone below the lowest tooth (`TIP-TOOTH > 0`), enabling `CHAMFER` uses the lower 60° flank of the tooth to interpolate a 120° countersink at the top of the hole before retracting.
 - **BB catalog button (`USE BB`):** In the `ENDMILL` tab, clicking `USE BB` looks up the thread in the built-in BB (`BK2055` / `BF2055`) single-tooth carbide thread mill table and fills in crest diameter, flute count, and usable neck reach (`REACH`), warning you if your thread depth exceeds the tool's relieved neck length.
 - **Tool-center feedrate:** When you enter `FZ` (chip load per tooth), the generator computes the peripheral cutting-edge feedrate and scales it down to the tool-center path radius (`F_center = F_edge * R_center / R_major`) so you don't accidentally feed the tooth tips at 2x or 3x the intended chip load inside a small bore.
+- **Lead-in / lead-out (`LEAD FEED %`):** Every radial pass enters and leaves the thread on a tangential arc, but on that arc the cutting edge at the contact point travels on a bigger radius than the tool center (lead arc radius + cutter radius). Feeding the lead arc at the helix feedrate meant the tooth hit the wall at 1.6x to 3x the programmed edge feed, right when it was loading up. The lead arcs now get their own feedrate, referred to the edge at the contact point (`F_lead = F_edge * LEAD% * R_lead / (R_lead + R_cutter)`, 50% by default, set in the `ENDMILL` tab), and the helix feed is restored as soon as the tooth is on the thread. The same rule applies to the chamfer lead arcs.
 
 ### External threads (`EXT. THREAD`)
 
-Works the same way on a boss or stud centered at `CENTER X` / `CENTER Y`. The cutter rapids to a safe clearance point outside the cylinder OD, feeds down to start height, arcs tangentially into the thread flank over a quarter-pitch, spirals around the boss (`G2` CW going down for climb milling a right-hand thread with `M3`), and arcs tangentially clear before retracting.
+Works the same way on a boss or stud centered at `CENTER X` / `CENTER Y`. The cutter rapids to a safe clearance point outside the cylinder OD, feeds down to start height, arcs tangentially into the thread flank, spirals around the boss (`G2` CW going down for climb milling a right-hand thread with `M3`), and arcs tangentially clear before retracting.
+
+The external lead arc is a quarter circle with its radius sized from the thread depth + clearance gap + cutter radius, so the tooth swings in gently instead of turning tight around the crest. Its Z travel matches the angle it actually sweeps around the thread axis (about 1/12 to 1/8 of a pitch for typical sizes), so the tooth follows the thread lead on the way in and out. On internal threads the semicircle from the hole center sweeps a quarter turn around the axis, so the 1/4 pitch it climbs was already right.
 
 ---
 
@@ -48,6 +51,8 @@ For entry into solid stock, `HELIX` spirals down at the center at your chosen `R
 
 Once at depth on each Z level, clearing works strictly from the center outward in one consistent direction (`CLIMB` = `G3` CCW inside a pocket) with stepover capped at 70% of cutter diameter so no uncut triangles are left in the corners. If you specify `WALL STOCK` or `FLOOR STOCK`, roughing leaves that material and finishes the floor and full-depth wall at the end (using a tangential arc lead-in/lead-out on the wall, plus an optional `SPRING PASS`).
 
+Going from one roughing loop to the next, the rectangular pocket no longer steps straight out into the wall and turns a 90° corner: the loop stops one stepover short and an S-curve of two tangent quarter arcs carries the cutter onto the next loop, at `ENTRY FEED %`, so it loads up gradually. Circular pockets already spiral out on tangent half-turns. The wall-finish lead arcs also run at `ENTRY FEED %`, referred to the cutting edge at the contact point, because on a lead arc the edge travels on twice the radius of the tool center and would otherwise hit the wall at about 2x the finishing feed.
+
 ---
 
 ## External island contouring (`CONVERSATIONAL > PERIMETER`)
@@ -60,6 +65,8 @@ Once at depth on each Z level, clearing works strictly from the center outward i
 `RECT. CONTOUR` and `CIRC. CONTOUR` are the inverse of the pocket screens: you touch off `X0 Y0` at the center of your raw stock block (`STOCK X` x `STOCK Y`), tell it the finished rectangular or circular boss (`ISLAND`) you want left standing in the middle (with corner radius and rotation angle if rectangular), and it clears away all the surrounding stock down to `DEPTH`.
 
 Because it plunges outside the stock boundary (25% of cutter diameter clear of the stock edge) and steps inward in concentric loops (`G2` CW for outside climb milling), **make sure your stock sticks up above the vise jaws by more than `DEPTH`**.
+
+The loops are joined tangentially, the same as in the pockets: an S-curve between rectangular loops, and a half-turn whose radius shrinks from one circle to the next on circular islands. The wall-finish lead arcs use `ENTRY FEED %` referred to the cutting edge.
 
 ---
 

@@ -12,13 +12,18 @@ Strategy:
     on outside walls with M3).
   - Part must stick up out of the vise jaws further than the cut depth since the tool plunges
     outside the stock perimeter.
+  - Consecutive roughing loops are joined tangentially instead of with a straight radial step:
+    rectangular islands use an S-curve (pocket_gen.step_s), circular islands a half-turn whose
+    radius shrinks from one loop to the next.
+  - Wall finishing uses tangential lead-in / lead-out arcs at entry feed referred to the cutting
+    edge (same rule as pocket_gen.lead_feed).
 """
 
 import math
 
 from thread_mill_gen import _short
 from pocket_gen import (PocketParams, EPS, STEPOVER_MAX, _even, _line, _arc, rect_loop,
-                        emit_moves, program_start, program_end)
+                        emit_moves, program_start, program_end, lead_feed, step_s)
 
 GAP = 0.25                 # tool plunges 25% of cutter diameter outside stock
 
@@ -173,11 +178,40 @@ def label(p):
                                      ' R{}'.format(_short(p.corner_radius)) if p.corner_radius > 0 else '')
 
 
-def _loop(p, g, o, ccw, f, what):
+def _loop(p, g, o, ccw, f, what, stop=0.0, side=1.0):
     if p.circular:
-        r = g['R'] + o
+        r = (g['R'] + o) * side
         return [_arc(ccw, r, 0.0, None, 0.0, 0.0, f, what)]
-    return rect_loop(g['A'] + o, g['B'] + o, g['rc'] + o, ccw, f, what)
+    return rect_loop(g['A'] + o, g['B'] + o, g['rc'] + o, ccw, f, what, stop)
+
+
+def _roughing_loops(p, g, offs, ccw, base):
+    """Concentric roughing loops joined tangentially; always ends back at (base + offs[-1], 0)."""
+    m = []
+    side = 1.0
+    for j, o in enumerate(offs):
+        what = 'pass {} of {}'.format(j + 1, len(offs))
+        nxt = offs[j + 1] if j + 1 < len(offs) else None
+        if p.circular:
+            m.extend(_loop(p, g, o, ccw, 'cut', what, side=side))
+            if nxt is not None:
+                a, b = side * (base + o), -side * (base + nxt)
+                m.append(_arc(ccw, b, 0.0, None, (a + b) / 2.0, 0.0, 'entry',
+                              'pass {} of {}: tangential half-turn step-in'.format(j + 2, len(offs))))
+                side = -side
+            elif side < 0:
+                m.append(_arc(ccw, base + o, 0.0, None, 0.0, 0.0, 'cut', what + ': half-turn back to exit side'))
+            continue
+        d = o - nxt if nxt is not None else 0.0
+        stop = d if nxt is not None and g['B'] - g['rc'] > d + EPS else 0.0
+        m.extend(_loop(p, g, o, ccw, 'cut', what, stop))
+        if nxt is not None:
+            if stop:
+                m.extend(step_s(base + o, base + nxt, ccw, 'entry', 'pass {} of {}'.format(j + 2, len(offs))))
+            else:
+                m.append(_line(base + nxt, 0.0, None, 'entry',
+                               'pass {} of {}: step inward toward island'.format(j + 2, len(offs))))
+    return m
 
 
 def _finish_moves(p, g, ccw, z):
@@ -186,11 +220,11 @@ def _finish_moves(p, g, ccw, z):
     rho = rt
     loop = _loop(p, g, rt, ccw, 'finish', 'wall finishing pass')
     m = [_line(P + 2 * rho, 0.0, z, 'finish', 'finish: move to tangential lead-in start')]
-    m.append(_arc(not ccw, P, 0.0, None, P + rho, 0.0, 'finish', 'tangential lead-in to island wall'))
+    m.append(_arc(not ccw, P, 0.0, None, P + rho, 0.0, 'lead', 'tangential lead-in to island wall'))
     m.extend(loop)
     if p.spring_pass:
         m.extend(dict(x, c='spring pass: ' + x['c']) for x in loop)
-    m.append(_arc(not ccw, P + 2 * rho, 0.0, None, P + rho, 0.0, 'finish', 'tangential lead-out from wall'))
+    m.append(_arc(not ccw, P + 2 * rho, 0.0, None, P + rho, 0.0, 'lead', 'tangential lead-out from wall'))
     return m
 
 
@@ -221,16 +255,16 @@ def plan(p):
         floor = finish_floor and i == len(levels) - 1
         lvl = '{} of {}'.format(i + 1, n_rough) if not floor else 'floor finish'
         moves.append(_line(xs, 0.0, z, 'entry', 'level {}: plunge outside stock'.format(lvl)))
-        for j, o in enumerate(offs):
-            what = 'pass {} of {}'.format(j + 1, len(offs))
-            moves.append(_line(base + o, 0.0, None, 'entry', what + ': step inward toward island'))
-            moves.extend(_loop(p, g, o, ccw, 'cut', what))
+        moves.append(_line(base + offs[0], 0.0, None, 'entry',
+                           'pass 1 of {}: step inward toward island'.format(len(offs))))
+        moves.extend(_roughing_loops(p, g, offs, ccw, base))
         moves.append(_line(xs, 0.0, None, 'cut', 'retract outside stock through cleared area'))
     fin = _finish_moves(p, g, ccw, z_bottom) if finish_wall else []
     moves.extend(fin)
     return {'g': g, 'rt': rt, 'entry': {'kind': 'OUTSIDE'}, 'ccw': ccw, 'stepover': so, 'levels': levels,
             'z_rough': z_rough, 'z_bottom': z_bottom, 'finish_floor': finish_floor, 'finish_wall': finish_wall,
             'feed': feed, 'feed_entry': feed_entry, 'feed_finish': feed_finish, 'loops': len(offs),
+            'feed_lead': lead_feed(p, rt, rt),
             'offsets': offs, 'start': (xs, 0.0), 'moves': moves}
 
 
@@ -291,9 +325,12 @@ def generate(p):
         _short(k['feed']), _short(k['feed_entry']),
         ', finish F{} at tool center'.format(_short(k['feed_finish'])) if k['finish_wall'] and p.circular
         else (', finish F{}'.format(_short(k['feed_finish'])) if k['finish_wall'] else '')))
+    if k['finish_wall']:
+        out.append('(  wall lead-in/out F{}: entry feed at the cutting edge)'.format(_short(k['feed_lead'])))
     program_start(out, p, 'CONTOURING: {}'.format(label(p)))
-    feeds = {'entry': k['feed_entry'], 'cut': k['feed'], 'finish': k['feed_finish']}
-    feed_txt = {'entry': 'entry feed', 'cut': 'roughing feed', 'finish': 'finishing feed'}
+    feeds = {'entry': k['feed_entry'], 'cut': k['feed'], 'finish': k['feed_finish'], 'lead': k['feed_lead']}
+    feed_txt = {'entry': 'entry feed', 'cut': 'roughing feed', 'finish': 'finishing feed',
+                'lead': 'lead-in/out feed'}
     emit_moves(out, p, k, 0.0, 0.0, g['ang'], feeds, feed_txt, 'rapid outside stock to plunge point')
     program_end(out, p)
     return out

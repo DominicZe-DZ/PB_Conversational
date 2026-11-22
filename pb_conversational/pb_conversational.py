@@ -108,6 +108,7 @@ HELP = {
     'bb': 'USE BB: fills CUTTER Ø, FLUTES, PROFILES, and REACH from BB single-tooth catalog.',
     'spindle_rpm': 'CUTTER SPINDLE RPM.',
     'fz': 'FZ: chip load per flute. Edge feed = FZ x FLUTES x RPM; converted to tool-center feed.',
+    'lead_feed': 'LEAD FEED %: feedrate for tangential lead-in / lead-out arcs as % of edge feed at the contact point.',
 }
 
 
@@ -317,12 +318,13 @@ class ThreadPage(ConvPage):
         self.bb_button.clicked.connect(self._use_bb)
         self._attach_help(self.bb_button, 'bb')
         row(g, 4, 'REACH', self._edit('tool_reach', '0.000'), self.bb_button)
+        row(g, 5, 'LEAD FEED %', self._edit('lead_feed', '50'), QLabel(''))
         self.bb_label = self._lab('')
-        g.addWidget(self.bb_label, 5, 0, 1, 4)
+        g.addWidget(self.bb_label, 6, 0, 1, 4)
         self.mill_info = self._lab('')
         self.mill_info.setWordWrap(True)
-        g.addWidget(self.mill_info, 6, 0, 2, 4)
-        g.setRowStretch(8, 1)
+        g.addWidget(self.mill_info, 7, 0, 2, 4)
+        g.setRowStretch(9, 1)
         self.ptabs.addTab(w, 'ENDMILL')
 
         free = [self.depth_label, self.mill_info] + ([self.drill_info] if self.internal else [])
@@ -587,6 +589,7 @@ class ThreadPage(ConvPage):
         p.tooth_offset = num('tooth_offset')
         p.spindle_rpm = num('spindle_rpm')
         p.feed_edge = num('fz') * p.flutes * p.spindle_rpm
+        p.lead_feed = num('lead_feed') / 100.0
         p.radial_passes = num('radial_passes', True)
         p.pass_mode = 'EQ' if f['pass_mode'].currentIndex() == 0 else 'DEC'
         p.spring_pass = f['spring_pass'].currentIndex() == 1
@@ -693,12 +696,12 @@ class ThreadPage(ConvPage):
             mmax = mill_max_diameter(p, k['start_d'])
             cp = k['chamfer']
             self.mill_info.setText('{}{}  ·  F EDGE {:.{d}f}  ·  F CENTER {:.{d}f}\n'
-                                   '{} TURNS X {} PASSES{}'.format(
+                                   '{} TURNS X {} PASSES  ·  F LEAD {:.{d}f}{}'.format(
                                        'CREST AT Ø{} WITH CUTTER Ø{}{}\n'.format(
                                            self._len(k['final_d']), self._len(p.tool_diameter),
                                            ' (HOLE Ø{})'.format(self._len(mmax)) if mmax else ' (ROOT)'),
                                        self._vc(p.tool_diameter, p.spindle_rpm), p.feed_edge,
-                                       k['feed'], k['turns'], len(k['radii']),
+                                       k['feed'], k['turns'], len(k['radii']), k['leads'][-1]['feed'],
                                        '  ·  CHAMFER {} DEEP, {} TURNS'.format(self._len(cp['depth']), len(cp['passes']))
                                        if cp else '', d=1 if self._inch() else 0))
             steps = []

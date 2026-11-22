@@ -52,7 +52,7 @@ HELP = {
     'climb': 'CUT: climb (recommended: G3 inside pocket) or conventional (G2; for heavy backlash).',
     'entry': 'ENTRY: HELIX spirals down at center; RAMP zig-zags along long axis; PLUNGE feeds straight down.',
     'ramp_angle': 'RAMP ANGLE: helix/ramp slope in degrees (2-3 deg for steel, up to 5 deg for aluminum).',
-    'entry_feed': 'ENTRY FEED %: feedrate for Z entry and full-width center slot as % of cutting feed.',
+    'entry_feed': 'ENTRY FEED %: feedrate for Z entry, full-width center slot and wall lead-in/out as % of feed.',
     'tool_number': 'TOOL NUMBER: emits T.. M6. Verify tool exists in Tool Table.',
     'tool_diameter': 'CUTTER Ø: ACTUAL measured cutter diameter. Toolpath is offset directly from this.',
     'flutes': 'FLUTES: number of flutes (used with FZ and RPM for feedrate).',

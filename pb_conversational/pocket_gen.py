@@ -10,12 +10,18 @@ sketches (pocket_sketch.py). Reuses formatting helpers from thread_mill_gen.py.
 Strategy (built for small/retrofit mills with possible leadscrew backlash):
   - Inside-out roughing in a single cutting direction (all climb or all conventional).
     No zig-zag reversals that eat backlash on every pass and leave poorer walls/floors.
+  - Each rectangular roughing loop is joined to the next one by a tangent S-curve (two quarter
+    arcs) instead of a straight radial step, so the cutter loads up gradually and never turns
+    a sharp corner into fresh material. Circular pockets already use a tangent half-turn spiral.
   - Stepover capped at 70% of tool diameter (above ~70%, consecutive rectangular loops
     leave uncut corner islands since stepover * sqrt(2) > tool diameter).
   - Helical entry at pocket center by default (falls back to center ramp on narrow slots,
     or plunge if selected). Entry and the central full-width slot use reduced entry feedrate.
   - Equal Z roughing levels up to step_down, with optional wall/floor finishing stock.
   - Tangential arc lead-in / lead-out on full-depth wall finishing (+ optional spring pass).
+    Lead arcs run at entry feed referred to the cutting edge at the contact point: on a lead arc
+    of radius rho the edge travels on rho + tool radius, so F_lead = F * entry% * rho / (rho + rt).
+    Without this the edge would hit the wall at 2x the finishing feed.
 """
 
 import math
@@ -211,6 +217,11 @@ def entry_plan(p, g):
     return {'kind': None, 'r': 0.0, 's': 0.0, 'note': None}
 
 
+def lead_feed(p, rho, rt):
+    """Tool-center feed for a tangential lead arc of radius rho (edge speed at contact = entry feed)."""
+    return p.feed * p.entry_feed * rho / (rho + rt) if rho > EPS else p.feed * p.entry_feed
+
+
 def _even(total, step):
     return max(1, int(math.ceil(total / step - 1e-9)))
 
@@ -223,14 +234,15 @@ def _arc(ccw, x, y, z, cx, cy, f, c):
     return {'g': 3 if ccw else 2, 'x': x, 'y': y, 'z': z, 'cx': cx, 'cy': cy, 'f': f, 'c': c}
 
 
-def rect_loop(hx, hy, r, ccw, f, what):
-    """Closed rounded-rectangle toolpath starting and ending at (hx, 0)."""
+def rect_loop(hx, hy, r, ccw, f, what, stop=0.0):
+    """Closed rounded-rectangle toolpath starting at (hx, 0) and ending there,
+    or 'stop' short of it on the same side to hand over to step_s()."""
     s = 1.0 if ccw else -1.0
     pts = [(hx, s * (hy - r), None), (hx - r, s * hy, (hx - r, s * (hy - r))),
            (-hx + r, s * hy, None), (-hx, s * (hy - r), (-hx + r, s * (hy - r))),
            (-hx, -s * (hy - r), None), (-hx + r, -s * hy, (-hx + r, -s * (hy - r))),
            (hx - r, -s * hy, None), (hx, -s * (hy - r), (hx - r, -s * (hy - r))),
-           (hx, 0.0, None)]
+           (hx, -s * stop, None)]
     m = []
     for x, y, ce in pts:
         if ce is None:
@@ -238,6 +250,18 @@ def rect_loop(hx, hy, r, ccw, f, what):
         elif r > EPS:
             m.append(_arc(ccw, x, y, None, ce[0], ce[1], f, what + ', corner'))
     return m
+
+
+def step_s(x0, x1, ccw, f, what):
+    """Tangent S-curve (two quarter arcs) from (x0, -s*d) to (x1, 0), d = |x1 - x0|.
+    Joins a rect_loop() stopped d short of its start to the next loop at x1, same heading."""
+    s = 1.0 if ccw else -1.0
+    ex = 1.0 if x1 > x0 else -1.0
+    rho = abs(x1 - x0) / 2.0
+    xm = x0 + ex * rho
+    first_ccw = -s * ex > 0
+    return [_arc(first_ccw, xm, -s * rho, None, xm, -s * 2 * rho, f, what + ': tangential step-over'),
+            _arc(not first_ccw, x1, 0.0, None, xm, 0.0, f, what + ': tangential step-over')]
 
 
 def _entry_moves(ent, z0, z1, ccw, tan_a, level):
@@ -279,14 +303,23 @@ def _rect_clearing(p, g, ent, ccw, so):
         m.append(_line(s_len, 0.0, None, 'entry', 'center slot'))
         m.append(_line(-s_len, 0.0, None, 'entry', 'center slot return'))
     n = _even(mn, so) if mn > EPS else 0
+    loops = []
+    prev_stop = 0.0
     for k in range(1, n + 1):
         t = mn * k / n
         d = mn - t
         hx, hy, r = s_len + t, t, max(g['rc_rough'] - d, 0.0)
-        r = min(r, hy)
-        what = 'pass {} of {}'.format(k, n)
-        m.append(_line(hx, 0.0, None, 'cut', what + ': step out'))
-        m.extend(rect_loop(hx, hy, r, ccw, 'cut', what))
+        loops.append((hx, hy, min(r, hy)))
+    for k, (hx, hy, r) in enumerate(loops):
+        what = 'pass {} of {}'.format(k + 1, n)
+        nxt = loops[k + 1] if k + 1 < n else None
+        stop = nxt[0] - hx if nxt and hy - r > nxt[0] - hx + EPS else 0.0
+        if k == 0 or not prev_stop:
+            m.append(_line(hx, 0.0, None, 'entry', what + ': step out'))
+        m.extend(rect_loop(hx, hy, r, ccw, 'cut', what, stop))
+        if stop:
+            m.extend(step_s(hx, nxt[0], ccw, 'entry', 'pass {} of {}'.format(k + 2, n)))
+        prev_stop = stop
     return m, n
 
 
@@ -336,13 +369,13 @@ def _finish_moves(p, g, ccw, z):
         loop = rect_loop(P, hy, min(g['rc_fin'], hy), ccw, 'finish', 'wall finishing pass')
     m.append(_line(P - 2 * rho, 0.0, z, 'finish', 'finish: move to tangential lead-in start'))
     if rho > EPS:
-        m.append(_arc(ccw, P, 0.0, None, P - rho, 0.0, 'finish', 'tangential lead-in to wall'))
+        m.append(_arc(ccw, P, 0.0, None, P - rho, 0.0, 'lead', 'tangential lead-in to wall'))
     m.extend(loop)
     if p.spring_pass:
         m.extend(dict(x, c='spring pass: ' + x['c']) for x in loop)
     if rho > EPS:
-        m.append(_arc(ccw, P - 2 * rho, 0.0, None, P - rho, 0.0, 'finish', 'tangential lead-out from wall'))
-    return m
+        m.append(_arc(ccw, P - 2 * rho, 0.0, None, P - rho, 0.0, 'lead', 'tangential lead-out from wall'))
+    return m, rho
 
 
 def plan(p):
@@ -383,11 +416,12 @@ def plan(p):
             mm, loops = _rect_clearing(p, g, ent, ccw, so)
             moves.extend(mm)
         z_prev = z
-    fin = _finish_moves(p, g, ccw, z_bottom) if finish_wall else []
+    fin, rho = _finish_moves(p, g, ccw, z_bottom) if finish_wall else ([], 0.0)
     moves.extend(fin)
     return {'g': g, 'rt': rt, 'entry': ent, 'ccw': ccw, 'stepover': so, 'levels': levels, 'z_rough': z_rough,
             'z_bottom': z_bottom, 'finish_floor': finish_floor, 'finish_wall': finish_wall,
             'feed': feed, 'feed_entry': feed_entry, 'feed_finish': feed_finish, 'loops': loops,
+            'feed_lead': lead_feed(p, rho, rt),
             'start': ex0, 'moves': moves}
 
 
@@ -436,8 +470,9 @@ def generate(p):
     arc_dir = 'CCW, G3' if p.climb else 'CW, G2'
     z_approach = p.z_top + p.retract
     nc = len(p.centers)
-    feeds = {'entry': k['feed_entry'], 'cut': k['feed'], 'finish': k['feed_finish']}
-    feed_txt = {'entry': 'entry feed', 'cut': 'roughing feed', 'finish': 'finishing feed'}
+    feeds = {'entry': k['feed_entry'], 'cut': k['feed'], 'finish': k['feed_finish'], 'lead': k['feed_lead']}
+    feed_txt = {'entry': 'entry feed', 'cut': 'roughing feed', 'finish': 'finishing feed',
+                'lead': 'lead-in/out feed'}
 
     out = []
     out.append('(' + '=' * 70 + ')')
@@ -486,6 +521,8 @@ def generate(p):
         _short(k['feed']), _short(k['feed_entry']),
         ', finish F{} at tool center'.format(_short(k['feed_finish'])) if k['finish_wall'] and p.circular
         else (', finish F{}'.format(_short(k['feed_finish'])) if k['finish_wall'] else '')))
+    if k['finish_wall']:
+        out.append('(  wall lead-in/out F{}: entry feed at the cutting edge)'.format(_short(k['feed_lead'])))
     program_start(out, p, 'POCKET MILLING: {} pocket{}'.format(nc, 's' if nc > 1 else ''))
     for n, (cx, cy) in enumerate(p.centers):
         out.append('(pocket {} of {}: center X{} Y{})'.format(n + 1, nc, _short(cx), _short(cy)))

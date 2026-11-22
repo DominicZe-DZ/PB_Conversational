@@ -39,7 +39,7 @@ HELP.update({
     'wall_stock': 'WALL STOCK: radial stock left on island wall for finishing pass (0 = skip wall finish).',
     'stepover': 'STEPOVER %: max radial cut per pass as % of cutter Ø (40% typical, 70% max).',
     'climb': 'CUT: climb (recommended: G2 outside island) or conventional (G3; for heavy backlash).',
-    'entry_feed': 'ENTRY FEED %: feedrate for Z plunge outside stock and step-in moves as % of feed.',
+    'entry_feed': 'ENTRY FEED %: feedrate for Z plunge outside stock, step-in moves and wall lead-in/out as % of feed.',
     'tool_diameter': 'CUTTER Ø: ACTUAL measured cutter diameter. Oversized cutter yields undersized island.',
     'name': 'NAME: .ngc output filename. Auto-increments (_1, _2...) if file already exists.',
 })

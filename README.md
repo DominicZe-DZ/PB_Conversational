@@ -40,10 +40,10 @@ I built this for my own shop machines because I got tired of firing up full CAM 
 
 ### Option A: Single `.run` package
 
-Copy `dist/pb_conversational_1.5.0.run` to your LinuxCNC machine and run:
+Copy `dist/pb_conversational_1.5.1.run` to your LinuxCNC machine and run:
 
 ```bash
-bash pb_conversational_1.5.0.run
+bash pb_conversational_1.5.1.run
 ```
 
 The installer scans `~/linuxcnc/configs` for Probe Basic mill configurations (if there are several, it asks which one you want) and sets everything up. Restart Probe Basic when finished.
@@ -51,11 +51,11 @@ The installer scans `~/linuxcnc/configs` for Probe Basic mill configurations (if
 Other commands:
 
 ```bash
-bash pb_conversational_1.5.0.run install /path/to/your_machine.ini
-bash pb_conversational_1.5.0.run install --set-aside-templates   # hides empty example USER tabs
-bash pb_conversational_1.5.0.run status  [/path/to/your_machine.ini]
-bash pb_conversational_1.5.0.run uninstall [/path/to/your_machine.ini]
-bash pb_conversational_1.5.0.run --extract [FOLDER]              # extract files only
+bash pb_conversational_1.5.1.run install /path/to/your_machine.ini
+bash pb_conversational_1.5.1.run install --set-aside-templates   # hides empty example USER tabs
+bash pb_conversational_1.5.1.run status  [/path/to/your_machine.ini]
+bash pb_conversational_1.5.1.run uninstall [/path/to/your_machine.ini]
+bash pb_conversational_1.5.1.run --extract [FOLDER]              # extract files only
 ```
 
 ### Option B: From a git checkout
@@ -124,7 +124,7 @@ PB_Conversational/
 │   ├── pb_conversational_installer.py
 │   └── build_package.py
 ├── dist/
-│   └── pb_conversational_1.5.0.run
+│   └── pb_conversational_1.5.1.run
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── BACKLASH_COMPENSATION.md

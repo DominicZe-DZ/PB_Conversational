@@ -83,7 +83,7 @@ def _paths(qp, p, k, P):
         col, w, st = colors[kind]
         qp.setPen(_pen(col, w, st))
         for f, pts in samples:
-            if f != kind:
+            if (f if f != 'lead' else 'finish') != kind:
                 continue
             path = QPainterPath()
             for i, (x, y, z) in enumerate(pts):
